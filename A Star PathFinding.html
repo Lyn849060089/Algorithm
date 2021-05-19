@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>A* Path Finding</title>
+
+    <style>
+        :root {
+            --button-color-start: #35f215;
+            --button-color-end: #1590f2;
+            --button-color-obstacle: #d43c33;
+        }
+
+        .container {
+            width: 400px;
+            padding: 5px 10px 20px 10px;
+        }
+
+        .container>div {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 10px;
+        }
+
+        /* canvas {
+            border: 2px solid #000000;
+        } */
+
+        input {
+            height: 30px;
+            width: 64px;
+        }
+
+        #test {
+            width: 128px;
+            height: 36px;
+            margin-left: 10px;
+        }
+
+        .action {
+            color: #ffffff;
+            font-size: 18px;
+            height: 36px;
+            width: 128px;
+        }
+
+        .action[data-action="1"] {
+            background-color: var(--button-color-start);
+        }
+
+        .action[data-action="2"] {
+            background-color: var(--button-color-end);
+        }
+
+        .action[data-action="3"] {
+            background-color: var(--button-color-obstacle);
+        }
+
+        .action:disabled {
+            background-color: #eeeeee;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div>
+            <div>
+                <input type="number" placeholder="宽度个数" data-type="x">
+                <span> X </span>
+                <input type="number" placeholder="长度个数" data-type="y">
+            </div>
+            <button id="test">开始寻路</button>
+        </div>
+        <div>
+            <button class="action" data-action="1">设置起点</button>
+            <button class="action" data-action="2">设置终点</button>
+            <button class="action" data-action="3">绘制障碍物</button>
+        </div>
+    </div>
+    <canvas id="Canvas"></canvas>
+
+    <script>
+        class PriorityQueue {
+            constructor() {
+                this.items = new Array()
+                this.size = 0
+            }
+
+            enqueue(object) {
+                if (object === null)
+                    throw new Error('插入的元素不正确')
+
+                this.items.push(object)
+                this.size++
+                // 让f值小的元素处于堆顶
+                let index = this.size - 1
+                let parent = Math.floor((index - 1) / 2)
+                while (index !== 0 && this.items[index].F() < this.items[parent].F()) {
+                    this.swap(index, parent)
+                    index = parent
+                    parent = Math.floor((index - 1) / 2)
+                }
+            }
+
+            dequeue() {
+                if (this.items.length === 0)
+                    throw new Error('队列为空')
+
+                const deleted = this.items[0]
+                let index = 0
+                let left = index * 2 + 1
+                let right = index * 2 + 2
+                while (this.items[left]) {
+                    if (this.items[right] && this.items[left].F() > this.items[right].F()) {
+                        this.swap(index, right)
+                        index = right
+                    } else {
+                        this.swap(index, left)
+                        index = left
+                    }
+                    left = index * 2 + 1
+                    right = index * 2 + 2
+                }
+                this.items.splice(index, 1)
+                this.size--
+                return deleted
+            }
+
+            isEmpty() {
+                return this.size === 0
+            }
+
+            contains(object) {
+                return this.find(object) !== null
+            }
+
+            find(object) {
+                for (let item of this.items) {
+                    if (item.x === object.x && item.y === object.y)
+                        return item
+                }
+                return null
+            }
+
+            swap(a, b) {
+                const temp = this.items[a]
+                this.items[a] = this.items[b]
+                this.items[b] = temp
+            }
+        }
+
+        class GridNode {
+            constructor(x, y, type) {
+                this.type = type
+                this.x = x
+                this.y = y
+                this.parent = null
+                this.g = 0
+                this.h = 0
+            }
+
+            setParent(parent) {
+                this.parent = parent
+            }
+
+            setType(type) {
+                this.type = type
+            }
+
+            F() {
+                return this.g + this.h
+            }
+
+            equals(other) {
+                return this.x === other.x && this.y === other.y
+            }
+        }
+
+        const canvas = document.getElementById('Canvas')
+        const ctx = canvas.getContext('2d')
+
+        const ANIM_RATE = 80 // 动画速率
+
+        // Grid Initial Paramaters
+        let GRID_WIDTH_SIZE = 30
+        let GRID_HEIGHT_SIZE = 30
+        let CELL_SIZE = 20
+
+        let CANVAS_HEIGHT = canvas.height = CELL_SIZE * GRID_HEIGHT_SIZE
+        let CANVAS_WIDTH = canvas.width = CELL_SIZE * GRID_WIDTH_SIZE
+
+        let grid
+
+        const Color = {
+            START: '#35f215',
+            END: '#1590f2',
+            OBSTACLE: '#d43c33',
+            PATH: '#35f215',
+        }
+        const Type = {
+            START: '1',
+            END: '2',
+            OBSTACLE: '3',
+        }
+        let selectedAction = null
+
+        let startPoint = null
+        let endPoint = null
+        let obstaclePointList = []
+
+        const drawGrid = () => {
+            for (let index = CELL_SIZE; index < CANVAS_WIDTH; index += CELL_SIZE) {
+                ctx.moveTo(index, 0)
+                ctx.lineTo(index, CANVAS_HEIGHT)
+                ctx.stroke()
+            }
+            for (let index = CELL_SIZE; index < CANVAS_HEIGHT; index += CELL_SIZE) {
+                ctx.moveTo(0, index)
+                ctx.lineTo(CANVAS_WIDTH, index)
+                ctx.stroke()
+            }
+        }
+
+        const drawCell = (x, y, color) => {
+            ctx.fillStyle = color
+            ctx.fillRect(x * CELL_SIZE + 1, y * CELL_SIZE + 1, CELL_SIZE - 2, CELL_SIZE - 2)
+        }
+
+        const clearCell = (x, y) => {
+            ctx.clearRect(x * CELL_SIZE + 1, y * CELL_SIZE + 1, CELL_SIZE - 2, CELL_SIZE - 2)
+        }
+
+        const resetButtonGroup = () => {
+            document.querySelectorAll('.action').forEach(element => {
+                element.disabled = ''
+            })
+        }
+
+        const reload = () => {
+            if (GRID_WIDTH_SIZE < 1 || GRID_HEIGHT_SIZE < 1) {
+                alert('网格宽高无效')
+                location.reload(true)
+            }
+
+            CANVAS_HEIGHT = canvas.height = CELL_SIZE * GRID_HEIGHT_SIZE
+            CANVAS_WIDTH = canvas.width = CELL_SIZE * GRID_WIDTH_SIZE
+
+            grid = new Array(GRID_WIDTH_SIZE)
+            for (let i = 0; i < grid.length; i++) {
+                grid[i] = new Array(GRID_HEIGHT_SIZE)
+                for (let j = 0; j < GRID_HEIGHT_SIZE; j++) {
+                    grid[i][j] = new GridNode(i, j, null)
+                }
+            }
+
+            drawGrid()
+        }
+
+        reload()
+
+        document.querySelectorAll('input').forEach(element => {
+            const dataType = element.getAttribute('data-type')
+            if (dataType === 'x') {
+                element.value = GRID_WIDTH_SIZE
+            }
+            if (dataType === 'y') {
+                element.value = GRID_HEIGHT_SIZE
+            }
+
+            element.oninput = e => {
+                const type = e.target.dataset.type
+                if (type === 'x') {
+                    GRID_WIDTH_SIZE = Number.parseInt(e.target.value)
+                }
+                if (type === 'y') {
+                    GRID_HEIGHT_SIZE = Number.parseInt(e.target.value)
+                }
+                reload()
+            }
+        })
+
+        canvas.onclick = e => {
+            if (selectedAction === null)
+                return
+
+            const _X = Math.floor(e.offsetX / CELL_SIZE)
+            const _Y = Math.floor(e.offsetY / CELL_SIZE)
+
+            if (grid[_X][_Y].type === Type.START || grid[_X][_Y].type === Type.END)
+                return
+
+            switch (selectedAction) {
+                case Type.START:
+                    if (startPoint) {
+                        grid[startPoint.x][startPoint.y].setType(null)
+                        clearCell(startPoint.x, startPoint.y)
+                    }
+                    startPoint = grid[_X][_Y]
+                    grid[_X][_Y].setType(Type.START)
+                    drawCell(_X, _Y, Color.START)
+                    break
+                case Type.END:
+                    if (endPoint) {
+                        grid[endPoint.x][endPoint.y].setType(null)
+                        clearCell(endPoint.x, endPoint.y)
+                    }
+                    endPoint = grid[_X][_Y]
+                    grid[_X][_Y].setType(Type.END)
+                    drawCell(_X, _Y, Color.END)
+                    break
+                case Type.OBSTACLE:
+                    let targetIndex
+                    let target = obstaclePointList.find((item, index) => {
+                        if (item.x === _X && item.y === _Y) {
+                            targetIndex = index
+                            return item
+                        }
+                    })
+                    if (target) {
+                        obstaclePointList.splice(targetIndex, 1)
+                        grid[_X][_Y].setType(null)
+                        clearCell(_X, _Y)
+                    } else {
+                        obstaclePointList.push(grid[_X][_Y])
+                        grid[_X][_Y].setType(Type.OBSTACLE)
+                        drawCell(_X, _Y, Color.OBSTACLE)
+                    }
+                    break
+            }
+        }
+
+        document.querySelectorAll('.action').forEach(element => {
+            element.onclick = e => {
+                resetButtonGroup()
+                e.target.disabled = 'disabled'
+                selectedAction = e.target.dataset.action
+            }
+        })
+
+        const getNearbyCell = cell => {
+            const list = new Array()
+            // Top
+            if (cell.x - 1 >= 0)
+                list.push(grid[cell.x - 1][cell.y])
+            // TopRight
+            if (cell.x - 1 >= 0 && cell.y + 1 < grid[0].length)
+                list.push(grid[cell.x - 1][cell.y + 1])
+            // Right
+            if (cell.y + 1 < grid[0].length)
+                list.push(grid[cell.x][cell.y + 1])
+            // DownRight
+            if (cell.x + 1 < grid.length && cell.y + 1 < grid[0].length)
+                list.push(grid[cell.x + 1][cell.y + 1])
+            // Down
+            if (cell.x + 1 < grid.length)
+                list.push(grid[cell.x + 1][cell.y])
+            // DownLeft
+            if (cell.x + 1 < grid.length && cell.y - 1 >= 0)
+                list.push(grid[cell.x + 1][cell.y - 1])
+            // Left
+            if (cell.y - 1 >= 0)
+                list.push(grid[cell.x][cell.y - 1])
+            // TopLeft
+            if (cell.x - 1 >= 0 && cell.y - 1 >= 0)
+                list.push(grid[cell.x - 1][cell.y - 1])
+
+            return list
+        }
+
+        const H = (end, current) => {
+            return (Math.abs(end.x - current.x) + Math.abs(end.y - current.y)) * 10
+        }
+
+        const G = (start, current) => {
+            if (start.x != current.x && start.y != current.y) {
+                return Math.abs(start.x - current.x) * 14
+            }
+            return (Math.abs(start.x - current.x) + Math.abs(start.y - current.y)) * 10
+        }
+
+        const drawPath = end => {
+            drawCell(end.x, end.y, Color.PATH)
+
+            if (end.parent)
+                drawPath(end.parent)
+        }
+
+        const findPath = () => {
+            const openList = new PriorityQueue()
+            const closeList = new Set()
+
+            startPoint.h = H(endPoint, startPoint)
+            openList.enqueue(startPoint)
+
+            let counter = 0 // 动画
+            while (!openList.isEmpty()) {
+                counter++ // 动画
+                const node = openList.dequeue()
+                closeList.add(node)
+
+                // 动画
+                setTimeout(() => {
+                    drawCell(node.x, node.y, '#336633')
+                }, ANIM_RATE * counter);
+
+                if (node.equals(endPoint))
+                    break
+
+                for (let next of getNearbyCell(node)) {
+                    if (next.type === Type.OBSTACLE || closeList.has(next))
+                        continue
+
+                    if (!openList.contains(next)) {
+                        next.setParent(node)
+                        next.g = node.g + G(node, next)
+                        next.h = H(endPoint, next)
+                        openList.enqueue(next)
+                    } else if (next.g > node.g + G(node, next)) {
+                        next.setParent(node)
+                        next.g = node.g + G(node, next)
+                    }
+                }
+
+                if (openList.contains(endPoint))
+                    break
+            }
+
+            if (openList.isEmpty())
+                alert('Path not found !')
+            else {
+                // 动画
+                setTimeout(() => {
+                    drawPath(endPoint)
+                }, ANIM_RATE * (counter + 1));
+            }
+        }
+
+        document.querySelector('#test').onclick = () => {
+            if (!startPoint) {
+                alert('请设置起点')
+                return
+            }
+            if (!endPoint) {
+                alert('请设置终点')
+                return
+            }
+            findPath()
+        }
+    </script>
+</body>
+
+</html>
